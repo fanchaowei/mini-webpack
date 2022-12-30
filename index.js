@@ -1,33 +1,45 @@
 import fs from 'fs'
+import ejs from 'ejs'
 import path from 'path'
 import parser from '@babel/parser' // 用于 ast 的生成
 import traverse from '@babel/traverse' // 用于遍历 ast
+import { transformFromAst } from 'babel-core'
+
+let id = 0
 
 // 该函数主要用于：1. 获取文件的内容。 2. 获取依赖关系
 function createAsset(filePath) {
   // 获取文件内容，字符串形式
   const source = fs.readFileSync(filePath, {
-    encoding: 'utf-8'
+    encoding: 'utf-8',
   })
   // 获得文件内容的 ast 树
   const ast = parser.parse(source, {
-    sourceType: 'module'
+    sourceType: 'module',
   })
 
+  // 存储 import 引用的文件的名称/路径
   const deps = new Set()
   // 遍历 ast 树，传入回调来处理我们需要处理的 ast 节点
   traverse.default(ast, {
     // 处理 import 引用
     ImportDeclaration({ node }) {
       deps.add(node.source.value)
-    }
+    },
+  })
+
+  // 将文件内容内的 esm 规范代码转化为 cjs 规范代码，如将 import 转化为 require
+  const { code } = transformFromAst(ast, null, {
+    presets: ['env'],
   })
 
   // 文件实例对象
   return {
     filePath,
-    source,
-    deps: [...deps]
+    code,
+    deps: [...deps],
+    id: id++,
+    mapping: {},
   }
 }
 // 创建一个文件调用图
@@ -39,7 +51,10 @@ function createGraph() {
 
   for (const asset of queue) {
     asset.deps.forEach((relativePath) => {
+      // 通过文件内容 import 的路径，来依次解析涉及的文件
       const child = createAsset(path.resolve('./example', relativePath))
+      // 在解析完一个 import 文件后，就将它和它的 id 信息存入 id 地图中
+      asset.mapping[relativePath] = child.id
       queue.push(child)
     })
   }
@@ -47,4 +62,25 @@ function createGraph() {
   return queue
 }
 
-console.log(createGraph())
+const graph = createGraph()
+
+// 生成打包代码
+function build(graph) {
+  // 读取模版内的内容
+  const template = fs.readFileSync('./bundle.ejs', { encoding: 'utf-8' })
+
+  const data = graph.map((asset) => {
+    return {
+      id: asset.id,
+      filePath: asset.filePath,
+      code: asset.code,
+      mapping: asset.mapping,
+    }
+  })
+  // 将 data 传给 ejs 模版，生成最终的代码内容
+  const code = ejs.render(template, { data })
+  // 写入文件
+  fs.writeFileSync('./dist/bundle.js', code)
+}
+
+build(graph)
