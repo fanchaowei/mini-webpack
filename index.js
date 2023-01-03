@@ -5,6 +5,8 @@ import parser from '@babel/parser' // 用于 ast 的生成
 import traverse from '@babel/traverse' // 用于遍历 ast
 import { transformFromAst } from 'babel-core'
 import { jsonLoader } from './jsonLoader.js'
+import { ChangeOutputPath } from './ChangeOutputPath.js'
+import { SyncHook } from 'tapable'
 
 let id = 0
 
@@ -17,7 +19,12 @@ const webpackConfig = {
         use: [jsonLoader]
       }
     ]
-  }
+  },
+  plugins: [new ChangeOutputPath()]
+}
+
+const hooks = {
+  emitFile: new SyncHook(['context'])
 }
 
 // 该函数主要用于：1. 获取文件的内容。 2. 获取依赖关系
@@ -100,6 +107,15 @@ function createGraph() {
   return queue
 }
 
+// 注册 plugins
+function initPlugins() {
+  const plugins = webpackConfig.plugins
+  plugins.forEach((plugin) => {
+    plugin.apply(hooks)
+  })
+}
+initPlugins()
+
 const graph = createGraph()
 
 // 生成打包代码
@@ -117,8 +133,18 @@ function build(graph) {
   })
   // 将 data 传给 ejs 模版，生成最终的代码内容
   const code = ejs.render(template, { data })
+  // 导出路径
+  let outputPath = './dist/bundle.js'
+  // 传给对应 hooks 使用的执行上下文对象
+  const context = {
+    chgOutputPath(path) {
+      outputPath = path
+    }
+  }
+  // 触发对应 hooks
+  hooks.emitFile.call(context)
   // 写入文件
-  fs.writeFileSync('./dist/bundle.js', code)
+  fs.writeFileSync(outputPath, code)
 }
 
 build(graph)
